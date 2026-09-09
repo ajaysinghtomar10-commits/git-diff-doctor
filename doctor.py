@@ -1,45 +1,76 @@
 #!/usr/bin/env python3
-import subprocess
+"""
+git-diff-doctor - Zero-dependency AI Pre-commit Reviewer
+Supports: Ollama (Free Local AI) and OpenAI API
+Maintainer: Ajay Singh Tomar
+"""
+
+import os
 import sys
 import json
+import subprocess
 import urllib.request
+import urllib.error
 
 def get_staged_diff():
+    """Retrieve staged changes from git diff --cached."""
     try:
-        result = subprocess.run(["git", "diff", "--cached"], capture_output=True, text=True, check=True)
+        result = subprocess.run(
+            ["git", "diff", "--cached"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
         return result.stdout.strip()
     except Exception:
         return None
 
-def review_code(diff, api_key, provider="openai"):
-    """Sends the diff to AI for review using pure Python (urllib)."""
+def review_with_ollama(diff, model="codellama"):
+    """Send diff to local Ollama server (Free, Private)."""
+    url = "http://localhost:11434/api/generate"
+    prompt = f"You are Git-Diff-Doctor. Review this git diff for bugs, security issues, and style improvements. Be brief.\n\nDiff:\n{diff}"
     
-    # The instructions for the AI "Doctor"
-    system_prompt = "You are Git-Diff-Doctor. Review this code diff for bugs, security risks, and style. Be concise."
-    
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False
+    }
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            res_data = json.loads(response.read().decode("utf-8"))
+            return res_data.get("response", "No response content received.")
+    except urllib.error.URLError:
+        return None  # Ollama is not running locally
+
+def review_with_openai(diff, api_key):
+    """Send diff to OpenAI API."""
     url = "https://api.openai.com/v1/chat/completions"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}"
     }
-    
     data = {
-        "model": "gpt-4o", # You can change this to gpt-3.5-turbo
+        "model": "gpt-4o-mini",
         "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Review this git diff:\n\n{diff}"}
+            {"role": "system", "content": "You are Git-Diff-Doctor. Review this git diff concisely for bugs and security risks."},
+            {"role": "user", "content": diff}
         ]
     }
 
-    print("?? Doctor is analyzing the code... Please wait.")
-    
     try:
         req = urllib.request.Request(url, data=json.dumps(data).encode("utf-8"), headers=headers)
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=15) as response:
             res_data = json.loads(response.read().decode("utf-8"))
             return res_data["choices"][0]["message"]["content"]
     except Exception as e:
-        return f"? Error connecting to AI: {str(e)}"
+        return f"? OpenAI Error: {str(e)}"
 
 def main():
     print("--- ?? git-diff-doctor ---")
@@ -47,20 +78,32 @@ def main():
 
     if not diff:
         print("? No staged changes to review.")
-        return
+        sys.exit(0)
 
-    # For now, we ask for a key. Later we will use a config file.
-    print("Tip: To use OpenAI, you need an API Key. (Enter to skip/dummy test)")
-    key = input("Enter OpenAI API Key: ").strip()
+    # 1. Try Local Ollama First (Free & Private)
+    print("?? Checking local Ollama instance...")
+    ollama_review = review_with_ollama(diff)
+    if ollama_review:
+        print("\n--- ?? AI REVIEW REPORT (Ollama Local) ---")
+        print(ollama_review)
+        print("------------------------------------------")
+        sys.exit(0)
 
-    if not key:
-        print("\nSkipping AI review (No API Key provided).")
-        print("Diff found successfully. The engine is ready!")
-    else:
-        report = review_code(diff, key)
-        print("\n--- ?? AI REVIEW REPORT ---")
+    # 2. Try OpenAI API if Key is set in Environment
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        print("?? Connecting to OpenAI API...")
+        report = review_with_openai(diff, api_key)
+        print("\n--- ?? AI REVIEW REPORT (OpenAI) ---")
         print(report)
-        print("--------------------------")
+        print("-----------------------------------")
+        sys.exit(0)
+
+    # 3. Graceful Fallback (No AI available)
+    print("?? Note: Neither local Ollama nor OPENAI_API_KEY detected.")
+    print("?? Tip: Start Ollama locally on port 11434 for free offline code reviews!")
+    print("? Staged diff verified. Proceeding with commit.\n")
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()
